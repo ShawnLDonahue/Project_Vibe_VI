@@ -1,0 +1,416 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PoweredMindMap V1.0</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+
+<style>
+    body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #0b0d12;
+        overflow: hidden;
+        color: white;
+    }
+
+    #welcomeModal {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.75);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 999;
+    }
+
+    #modalBox {
+        background: #151823;
+        border: 1px solid #2a2f3d;
+        padding: 20px;
+        border-radius: 12px;
+        width: 360px;
+        box-shadow: 0 0 40px rgba(0,0,0,0.6);
+    }
+
+    #modalBox h2 {
+        margin-top: 0;
+        color: #00E5FF;
+    }
+
+    #modalBox p {
+        font-size: 13px;
+        line-height: 1.5;
+        color: #cfd3e1;
+    }
+
+    #modalBox button {
+        margin-top: 12px;
+        width: 100%;
+        padding: 10px;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        background: #00E5FF;
+        color: #000;
+        font-weight: bold;
+    }
+
+    #inputBox {
+        position: absolute;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 20;
+        display: flex;
+        gap: 8px;
+        background: rgba(20, 22, 30, 0.85);
+        padding: 10px;
+        border-radius: 10px;
+        backdrop-filter: blur(8px);
+    }
+
+    input {
+        padding: 8px;
+        border-radius: 6px;
+        border: none;
+        width: 260px;
+        outline: none;
+    }
+
+    button {
+        padding: 8px 12px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        background: #222733;
+        color: white;
+    }
+
+    button:hover {
+        background: #2f3545;
+    }
+
+    svg {
+        width: 100vw;
+        height: 100vh;
+    }
+
+    .link {
+        stroke: #3a3f4d;
+        stroke-opacity: 0.6;
+    }
+
+    .node circle {
+        fill: transparent;
+        stroke-width: 3px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .node text {
+        font-size: 12px;
+        pointer-events: auto;
+        cursor: pointer;
+        fill: white;
+    }
+</style>
+</head>
+
+<body>
+
+<div id="welcomeModal">
+    <div id="modalBox">
+        <h2>Welcome to PoweredMindMap V1.0</h2>
+        <p>
+            • Click a node to select it as the parent<br>
+            • Add text and press Enter or click Add<br>
+            • Double-click node text to edit label/content<br>
+            • Drag nodes freely — they stay where you place them<br>
+            • Double-click node to collapse/expand children<br>
+            • Shift + click node to delete subtree<br>
+        </p>
+        <button onclick="closeModal()">Enter Workspace</button>
+    </div>
+</div>
+
+<div id="inputBox">
+    <input id="nodeText" placeholder="Add node to selected..." />
+    <button onclick="addNode()">Add</button>
+    <button onclick="saveGraph()">Save</button>
+    <button onclick="loadGraph()">Load</button>
+    <button onclick="resetGraph()">Reset</button>
+</div>
+
+<svg></svg>
+
+<script>
+
+function closeModal() {
+    document.getElementById("welcomeModal").style.display = "none";
+}
+
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") addNode();
+});
+
+const svg = d3.select("svg");
+const width = window.innerWidth;
+const height = window.innerHeight;
+
+const colors = ["#00E5FF","#FF2E63","#7C4DFF","#00FF85","#FFD600","#FF6D00","#40C4FF"];
+
+let colorIndex = 1;
+const branchColorMap = new Map();
+
+function getBranchColor(nodeId) {
+    if (branchColorMap.has(nodeId)) {
+        return branchColorMap.get(nodeId);
+    }
+
+    const color = colors[colorIndex % colors.length];
+    colorIndex++;
+
+    branchColorMap.set(nodeId, color);
+    return color;
+}
+
+const defs = svg.append("defs");
+
+const filter = defs.append("filter")
+    .attr("id", "glow");
+
+filter.append("feGaussianBlur")
+    .attr("stdDeviation", "4")
+    .attr("result", "blur");
+
+const merge = filter.append("feMerge");
+merge.append("feMergeNode").attr("in", "blur");
+merge.append("feMergeNode").attr("in", "SourceGraphic");
+
+let nodes = [
+    { id: 0, label: "Root", color: "#00E5FF", collapsed: false }
+];
+
+let links = [];
+let selectedNode = nodes[0];
+
+const simulation = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id(d => d.id).distance(140))
+    .force("charge", d3.forceManyBody().strength(-520))
+    .force("center", d3.forceCenter(width / 2, height / 2));
+
+const linkGroup = svg.append("g");
+const nodeGroup = svg.append("g");
+
+function getDescendants(nodeId, linksMap, visited = new Set()) {
+    if (visited.has(nodeId)) return [];
+    visited.add(nodeId);
+
+    let children = linksMap.get(nodeId) || [];
+    let result = [...children];
+
+    for (let child of children) {
+        result = result.concat(getDescendants(child, linksMap, visited));
+    }
+    return result;
+}
+
+function buildLinkMap() {
+    const map = new Map();
+    for (let l of links) {
+        const src = typeof l.source === "object" ? l.source.id : l.source;
+        const tgt = typeof l.target === "object" ? l.target.id : l.target;
+
+        if (!map.has(src)) map.set(src, []);
+        map.get(src).push(tgt);
+    }
+    return map;
+}
+
+function update() {
+
+    const visibleNodes = nodes.filter(n => !n.hidden);
+
+    const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
+
+    const visibleLinks = links.filter(l => {
+        const s = typeof l.source === "object" ? l.source.id : l.source;
+        const t = typeof l.target === "object" ? l.target.id : l.target;
+        return visibleNodeIds.has(s) && visibleNodeIds.has(t);
+    });
+
+    linkGroup.selectAll("line")
+        .data(visibleLinks)
+        .join("line")
+        .attr("class", "link");
+
+    const node = nodeGroup.selectAll("g")
+        .data(visibleNodes, d => d.id)
+        .join("g")
+        .on("click", (event, d) => {
+
+            if (event.shiftKey) {
+                deleteSubtree(d.id);
+                return;
+            }
+
+            selectedNode = d;
+            update();
+        })
+        .on("dblclick", (event, d) => {
+            toggleCollapse(d);
+        })
+        .call(d3.drag()
+            .on("start", dragStarted)
+            .on("drag", dragged)
+            .on("end", dragEnded)
+        );
+
+    node.selectAll("circle")
+        .data(d => [d])
+        .join("circle")
+        .attr("r", d => d === selectedNode ? 26 : 20)
+        .attr("stroke", d => d.color)
+        .attr("stroke-width", d => d === selectedNode ? 7 : 3)
+        .style("filter", "url(#glow)");
+
+    node.selectAll("text")
+        .data(d => [d])
+        .join("text")
+        .attr("dx", 30)
+        .attr("dy", 5)
+        .text(d => d.label)
+        .on("dblclick", (event, d) => {
+            event.stopPropagation();
+            const newLabel = prompt("Edit node label:", d.label);
+            if (newLabel && newLabel.trim()) {
+                d.label = newLabel;
+                update();
+            }
+        })
+        .style("fill", "white");
+
+    simulation.nodes(visibleNodes);
+    simulation.force("link").links(visibleLinks);
+    simulation.alpha(1).restart();
+}
+
+function toggleCollapse(node) {
+    node.collapsed = !node.collapsed;
+
+    const map = buildLinkMap();
+    const descendants = getDescendants(node.id, map);
+
+    if (node.collapsed) {
+        descendants.forEach(id => {
+            const n = nodes.find(x => x.id === id);
+            if (n) n.hidden = true;
+        });
+    } else {
+        descendants.forEach(id => {
+            const n = nodes.find(x => x.id === id);
+            if (n) n.hidden = false;
+        });
+    }
+
+    update();
+}
+
+function deleteSubtree(nodeId) {
+    const map = buildLinkMap();
+    const descendants = getDescendants(nodeId, map);
+
+    const toRemove = new Set([nodeId, ...descendants]);
+
+    nodes = nodes.filter(n => !toRemove.has(n.id));
+    links = links.filter(l => {
+        const s = typeof l.source === "object" ? l.source.id : l.source;
+        const t = typeof l.target === "object" ? l.target.id : l.target;
+        return !toRemove.has(s) && !toRemove.has(t);
+    });
+
+    update();
+}
+
+/* ---------- DRAG ---------- */
+function dragStarted(event, d) {
+    if (!event.active) simulation.alphaTarget(0.2).restart();
+    d.fx = d.x;
+    d.fy = d.y;
+}
+
+function dragged(event, d) {
+    d.fx = event.x;
+    d.fy = event.y;
+}
+
+function dragEnded(event, d) {
+    if (!event.active) simulation.alphaTarget(0);
+    d.fx = event.x;
+    d.fy = event.y;
+}
+
+/* ---------- TICK ---------- */
+simulation.on("tick", () => {
+
+    linkGroup.selectAll("line")
+        .attr("x1", d => d.source.x)
+        .attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x)
+        .attr("y2", d => d.target.y);
+
+    nodeGroup.selectAll("g")
+        .attr("transform", d => `translate(${d.x},${d.y})`);
+});
+
+function addNode() {
+    const text = document.getElementById("nodeText").value;
+    if (!text) return;
+
+    const parent = selectedNode;
+
+    nodes.push({
+        id: nodes.length,
+        label: text,
+        color: getBranchColor(parent.id),
+        collapsed: false
+    });
+
+    links.push({
+        source: parent.id,
+        target: nodes.length - 1
+    });
+
+    document.getElementById("nodeText").value = "";
+    update();
+}
+
+function saveGraph() {
+    localStorage.setItem("mindmap", JSON.stringify({ nodes, links }));
+}
+
+function loadGraph() {
+    const data = JSON.parse(localStorage.getItem("mindmap"));
+    if (!data) return;
+    nodes = data.nodes;
+    links = data.links;
+    selectedNode = nodes[0];
+    update();
+}
+
+function resetGraph() {
+    nodes = [{ id: 0, label: "Root", color: "#00E5FF", collapsed: false }];
+    links = [];
+    selectedNode = nodes[0];
+    colorIndex = 1;
+    branchColorMap.clear();
+    update();
+}
+
+update();
+</script>
+
+</body>
+</html>
